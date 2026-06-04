@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title></title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #000;
+    cursor: none;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  canvas { display: block; touch-action: none; }
+  #overlay {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #lyric-display {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(220, 215, 200, 0);
+    font-family: 'IM Fell English', 'Palatino Linotype', Palatino, serif;
+    font-size: clamp(14px, 4vw, 19px);
+    font-style: italic;
+    letter-spacing: 0.10em;
+    text-align: center;
+    line-height: 2.0;
+    max-width: min(480px, 88vw);
+    padding: 0 16px;
+    pointer-events: none;
+    transition: color 2.5s ease, opacity 2.5s ease;
+    opacity: 0;
+    text-shadow: 0 0 40px rgba(180,160,120,0.4);
+    z-index: 20;
+  }
+  #apology-container {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 30;
+    max-width: 560px;
+    width: 90%;
+  }
+  #apology-text {
+    color: rgba(235, 225, 205, 0);
+    font-family: 'IM Fell English', 'Palatino Linotype', Palatino, serif;
+    font-size: clamp(15px, 4.2vw, 21px);
+    font-style: italic;
+    letter-spacing: 0.08em;
+    line-height: 2.2;
+    text-shadow: 0 0 60px rgba(200,180,140,0.3);
+    transition: color 4s ease;
+    padding: 0 8px;
+  }
+  #hint {
+    position: fixed;
+    bottom: 6vh;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(180,165,140,0);
+    font-family: 'IM Fell English', 'Palatino Linotype', Palatino, serif;
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    pointer-events: none;
+    transition: color 3s ease, opacity 3s ease;
+    opacity: 0;
+    z-index: 15;
+  }
+  #vignette {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center,
+      transparent 45%,
+      rgba(0,0,0,0.35) 75%,
+      rgba(0,0,0,0.75) 100%);
+    pointer-events: none;
+    z-index: 5;
+  }
+  #custom-cursor {
+    position: fixed;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.6);
+    pointer-events: none;
+    z-index: 100;
+    transform: translate(-50%,-50%);
+    transition: width 0.3s, height 0.3s, background 0.3s;
+    box-shadow: 0 0 6px rgba(255,255,255,0.3);
+  }
+  @media (hover: none) {
+    #custom-cursor { display: none; }
+    body { cursor: default; }
+  }
+  #custom-cursor.hover-star {
+    width: 10px; height: 10px;
+    background: rgba(255,240,200,0.7);
+    box-shadow: 0 0 12px rgba(255,220,160,0.5);
+  }
+  #custom-cursor.hover-moon {
+    width: 14px; height: 14px;
+    background: rgba(240,235,220,0.5);
+    box-shadow: 0 0 20px rgba(255,245,220,0.4);
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+<div id="overlay"></div>
+<div id="lyric-display"></div>
+<div id="apology-container"><div id="apology-text"></div></div>
+<div id="hint">yukarı bak</div>
+<div id="custom-cursor"></div>
+
+<script>
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', {antialias:true, alpha:false});
+if(!gl){ document.body.innerHTML='<div style="color:#999;font-family:serif;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%)">webgl not supported</div>'; }
+
+// ── Resize ──────────────────────────────────────────────────────────────────
+let W, H;
+function resize(){
+  W = canvas.width  = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  gl.viewport(0,0,W,H);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ── State ───────────────────────────────────────────────────────────────────
+let mouseX=0, mouseY=0, targetYaw=0, targetPitch=0.18, yaw=0, pitch=0.18;
+let breathPhase=0, time=0;
+let discoveredCount=0;
+const TOTAL_LYRICS=7;
+let moonPhase=0; // 0=normal,1=fading,2=apology
+let globalFade=1.0, starFade=1.0;
+let isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints>0);
+
+// ── Song lyrics (5 interactive stars) ───────────────────────────────────────
+const LYRICS = [
+  "So, take a look into my eyes one last time\nSo, we never forget the way we were before\nWhen we came alive at the moment we met\nThis is still worth fighting\nStill worth fighting for",
+  "İnsanlar hep konuşur\nKimseyi takma aşkım herkes sıradan\nVe kimse senle ben değil\nSensiz yapamam\nÇıkmam bu odadan\nSen gelene kadar",
+  "Right about now, I'd do anything just to see your face\nEvery day, every day\nRight now, I'd do anything just to stay in your graces\nLike anything, every day",
+  "Let's mate and have a few kids\nTruth is I just got struck by cupid\nLet's make this shit exclusive, she wear it if the shoe fit\nI lost her, I would lose it",
+  "Cook it up\nC'mon, bite the hand that feeds you\nIt's what I do\nBut you know somebody needs you\nOh, how does it feel?\n'Cause I want you so bad",
+  "Şarköy'den döndüğümden beri hava yağıyo'\nGüneşe kayıp ezberim\nTerbiye edilemiyor hiç özlemin\nÜzgünüm, tek hatırladığım şey gözlerin\nKafam ağustosta, ben eylüldeyim",
+  "Oh darlin', darlin'\nWhat have I done?\nWell I've been away from you too long\nAnd all my days have turned to darkness\nAnd I believe my heart has turned to stone."
+];
+
+const APOLOGY = `Bir tanecik sevgilim,
+
+güzel kalbini kırdığım için çok özür dilerim.
+
+Seni burdaki yıldız taneleri kadar çok seviyorum.
+
+— Seni canından çok seven sevgilin, Kerem'in`;
+
+// ── Star data ────────────────────────────────────────────────────────────────
+// Each star: [azimuth (0-2π), elevation (0-π/2+), size, r, g, b, type]
+// type: 0=normal, 1=interactive(lyric), 2=moon
+const STAR_COUNT = 7200;
+const INTERACTIVE_STARS = 7;
+let starPositions = []; // {az, el, size, r,g,b, interactive, lyricIdx, discovered, screenX, screenY}
+let moonData = {az: 1.1, el: 0.52, discovered: false};
+
+function kelvinToRGB(k){
+  // Approximate stellar color from temperature
+  let r,g,b;
+  k /= 100;
+  if(k<=66){ r=255; g=Math.max(0,Math.min(255,99.4708025861*Math.log(k)-161.1195681661)); b=k<=19?0:Math.max(0,Math.min(255,138.5177312231*Math.log(k-10)-305.0447927307));}
+  else { r=Math.max(0,Math.min(255,329.698727446*Math.pow(k-60,-0.1332047592))); g=Math.max(0,Math.min(255,288.1221695283*Math.pow(k-60,-0.0755148492))); b=255; }
+  return [r/255, g/255, b/255];
+}
+
+function generateStars(){
+  // Natural star distribution
+  for(let i=0;i<STAR_COUNT;i++){
+    const az = Math.random()*Math.PI*2;
+    // Bias toward upper hemisphere, milky way band
+    let el;
+    const r = Math.random();
+    if(r < 0.15){
+      // Milky Way band: concentrated near galactic plane (simulate as arc)
+      const mwCenter = 0.3 + 0.2*Math.sin(az*0.7+1.2);
+      el = mwCenter + (Math.random()-0.5)*0.35;
+      el = Math.max(0.02, Math.min(Math.PI*0.48, el));
+    } else {
+      el = Math.pow(Math.random(), 0.6) * (Math.PI*0.5 - 0.02) + 0.02;
+    }
+    // Stellar temperatures: mostly F/G/K with some blue B/A and orange K/M
+    const tempRoll = Math.random();
+    let temp;
+    if(tempRoll<0.08) temp = 10000+Math.random()*20000; // blue-white
+    else if(tempRoll<0.25) temp = 7000+Math.random()*3000; // white
+    else if(tempRoll<0.60) temp = 5000+Math.random()*2000; // yellow
+    else if(tempRoll<0.85) temp = 3500+Math.random()*1500; // orange
+    else temp = 2500+Math.random()*1000; // red
+    const [cr,cg,cb] = kelvinToRGB(temp);
+    // Size: power-law distribution (most tiny, few bright)
+    const sizeRoll = Math.random();
+    let size;
+    if(sizeRoll<0.003) size = 2.2+Math.random()*1.4; // naked-eye brilliant
+    else if(sizeRoll<0.02) size = 1.5+Math.random()*0.8;
+    else if(sizeRoll<0.12) size = 0.9+Math.random()*0.6;
+    else size = 0.3+Math.random()*0.6;
+    starPositions.push({az,el,size,r:cr,g:cg,b:cb,interactive:false,lyricIdx:-1,discovered:false,screenX:0,screenY:0});
+  }
+  // Place interactive stars at well-spread, always-visible positions
+  // Distribute across azimuth sectors so they're findable
+  for(let j=0;j<INTERACTIVE_STARS;j++){
+    const az = (j/INTERACTIVE_STARS)*Math.PI*2 + (Math.random()-0.5)*0.6;
+    const el = 0.3 + Math.random()*0.5; // elevation 0.3–0.8 rad, always comfortably visible
+    const [cr,cg,cb] = kelvinToRGB(6500+Math.random()*4000);
+    starPositions.push({az,el,size:2.2+Math.random()*0.6,r:cr,g:cg,b:cb,interactive:true,lyricIdx:j,discovered:false,screenX:0,screenY:0});
+  }
+}
+generateStars();
+
+// ── WebGL shaders ─────────────────────────────────────────────────────────
+const vsStars = `
+attribute vec2 a_pos;  // azimuth, elevation
+attribute float a_size;
+attribute vec3 a_color;
+attribute float a_interactive;
+uniform float u_yaw;
+uniform float u_pitch;
+uniform float u_aspect;
+uniform float u_starFade;
+uniform float u_time;
+varying vec3 v_color;
+varying float v_interactive;
+varying float v_fade;
+
+vec3 sphereToCart(float az, float el){
+  return vec3(cos(el)*sin(az), sin(el), cos(el)*cos(az));
+}
+vec2 project(vec3 dir, float yaw, float pitch){
+  // Rotate around Y (yaw)
+  float cy=cos(-yaw), sy=sin(-yaw);
+  float x1=dir.x*cy+dir.z*sy, y1=dir.y, z1=-dir.x*sy+dir.z*cy;
+  // Rotate around X (pitch)
+  float cp=cos(pitch), sp=sin(pitch);
+  float x2=x1, y2=y1*cp-z1*sp, z2=y1*sp+z1*cp;
+  // Perspective divide
+  if(z2<0.01) return vec2(9999.0);
+  return vec2(x2/z2, y2/z2);
+}
+void main(){
+  vec3 dir = sphereToCart(a_pos.x, a_pos.y);
+  vec2 sc = project(dir, u_yaw, u_pitch);
+  vec2 ndc = vec2(sc.x / u_aspect, sc.y);
+  gl_Position = vec4(ndc, 0.0, 1.0);
+  // Atmospheric extinction near horizon
+  float horizonFade = smoothstep(0.0, 0.12, a_pos.y);
+  // Scintillation for bright stars
+  float twinkle = 1.0;
+  if(a_size>1.2) twinkle = 0.88+0.12*sin(u_time*3.7+a_pos.x*17.3+a_pos.y*23.1);
+  v_fade = horizonFade * u_starFade * twinkle;
+  v_color = a_color;
+  v_interactive = a_interactive;
+  float baseSize = a_size * 1.8;
+  if(a_interactive>0.5) baseSize += 0.5+0.4*sin(u_time*1.2+a_pos.x*5.0);
+  gl_PointSize = clamp(baseSize, 0.5, 6.0);
+}`;
+
+const fsStars = `
+precision mediump float;
+varying vec3 v_color;
+varying float v_interactive;
+varying float v_fade;
+void main(){
+  vec2 uv = gl_PointCoord - 0.5;
+  float d = length(uv);
+  float core = exp(-d*d*28.0);
+  float halo = exp(-d*d*6.0)*0.25;
+  float alpha = (core+halo) * v_fade;
+  if(alpha<0.008) discard;
+  vec3 col = v_color;
+  if(v_interactive>0.5){
+    col = mix(col, vec3(1.0,0.96,0.88), 0.3);
+  }
+  gl_FragColor = vec4(col, alpha);
+}`;
+
+const vsMilkyWay = `
+attribute vec2 a_pos;
+attribute float a_brightness;
+uniform float u_yaw;
+uniform float u_pitch;
+uniform float u_aspect;
+uniform float u_starFade;
+varying float v_brightness;
+varying float v_fade;
+vec3 sphereToCart(float az,float el){return vec3(cos(el)*sin(az),sin(el),cos(el)*cos(az));}
+vec2 project(vec3 dir,float yaw,float pitch){
+  float cy=cos(-yaw),sy=sin(-yaw);
+  float x1=dir.x*cy+dir.z*sy,y1=dir.y,z1=-dir.x*sy+dir.z*cy;
+  float cp=cos(pitch),sp=sin(pitch);
+  float x2=x1,y2=y1*cp-z1*sp,z2=y1*sp+z1*cp;
+  if(z2<0.01)return vec2(9999.0);
+  return vec2(x2/z2,y2/z2);
+}
+void main(){
+  vec3 dir=sphereToCart(a_pos.x,a_pos.y);
+  vec2 sc=project(dir,u_yaw,u_pitch);
+  gl_Position=vec4(sc.x/u_aspect,sc.y,0.0,1.0);
+  v_brightness=a_brightness;
+  v_fade=smoothstep(0.0,0.15,a_pos.y)*u_starFade;
+  gl_PointSize=clamp(a_brightness*3.5,0.5,3.5);
+}`;
+
+const fsMilkyWay=`
+precision mediump float;
+varying float v_brightness;
+varying float v_fade;
+void main(){
+  vec2 uv=gl_PointCoord-0.5;
+  float d=length(uv);
+  float a=exp(-d*d*12.0)*v_brightness*v_fade*0.45;
+  if(a<0.005)discard;
+  vec3 col=mix(vec3(0.55,0.6,0.75),vec3(0.75,0.65,0.55),v_brightness);
+  gl_FragColor=vec4(col,a);
+}`;
+
+// Skybox gradient via full-screen quad
+const vsSky=`
+attribute vec2 a_pos;
+varying vec2 v_uv;
+void main(){v_uv=a_pos*0.5+0.5;gl_Position=vec4(a_pos,0.0,1.0);}`;
+const fsSky=`
+precision mediump float;
+varying vec2 v_uv;
+uniform float u_pitch;
+uniform float u_fade;
+void main(){
+  float h=v_uv.y;
+  // Deep night: near zenith very dark blue-black, horizon slightly warmer/dusty
+  vec3 zenith=vec3(0.006,0.008,0.022);
+  vec3 horiz=vec3(0.012,0.010,0.016);
+  vec3 col=mix(horiz,zenith,pow(h,0.5));
+  // Horizon atmospheric glow (very subtle)
+  float horizGlow=exp(-h*8.0)*0.018;
+  col+=vec3(0.12,0.08,0.05)*horizGlow;
+  gl_FragColor=vec4(col*u_fade,1.0);
+}`;
+
+// Moon shader
+const vsMoon=`
+attribute vec2 a_pos;
+varying vec2 v_uv;
+uniform vec2 u_center;
+uniform float u_radius;
+uniform float u_aspect;
+void main(){
+  vec2 p=u_center+a_pos*u_radius*vec2(1.0,u_aspect);
+  v_uv=a_pos;
+  gl_Position=vec4(p,0.0,1.0);
+}`;
+const fsMoon=`
+precision mediump float;
+varying vec2 v_uv;
+uniform float u_fade;
+uniform float u_time;
+void main(){
+  float d=length(v_uv);
+  if(d>1.0)discard;
+  // Limb darkening
+  float limb=sqrt(1.0-d*d);
+  // Moon surface (simplified procedural craters/maria)
+  float angle=atan(v_uv.y,v_uv.x);
+  float noise1=sin(v_uv.x*8.3+v_uv.y*6.1)*0.5+0.5;
+  float noise2=sin(v_uv.x*3.7-v_uv.y*9.2)*0.5+0.5;
+  float noise3=sin((v_uv.x+v_uv.y)*5.1)*0.5+0.5;
+  float maria=noise1*0.3+noise2*0.3+noise3*0.4;
+  // Mare areas (darker)
+  float mare1=smoothstep(0.55,0.45,length(v_uv-vec2(-0.25,0.1)))*0.18;
+  float mare2=smoothstep(0.35,0.25,length(v_uv-vec2(0.15,-0.15)))*0.12;
+  float mare3=smoothstep(0.28,0.18,length(v_uv-vec2(-0.05,0.35)))*0.10;
+  float surface=0.78+maria*0.08-mare1-mare2-mare3;
+  surface*=limb*0.85+0.15;
+  // Moon color: slightly warm white
+  vec3 moonCol=vec3(surface*0.95,surface*0.93,surface*0.88);
+  float edge=smoothstep(1.0,0.92,d);
+  float glow=exp(-(d-1.0)*(d-1.0)*80.0)*0.08*edge;
+  gl_FragColor=vec4(moonCol*edge*u_fade+vec3(glow*u_fade),edge*u_fade);
+}`;
+
+// Terrain silhouette shader
+const vsTerrain=`
+attribute vec2 a_pos;
+void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
+const fsTerrain=`
+precision mediump float;
+uniform float u_fade;
+void main(){gl_FragColor=vec4(0.006,0.005,0.007,u_fade);}`;
+
+function compileShader(type, src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+function buildProgram(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compileShader(gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compileShader(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  return p;
+}
+
+const progSky=buildProgram(vsSky,fsSky);
+const progMW=buildProgram(vsMilkyWay,fsMilkyWay);
+const progStars=buildProgram(vsStars,fsStars);
+const progMoon=buildProgram(vsMoon,fsMoon);
+const progTerrain=buildProgram(vsTerrain,fsTerrain);
+
+// ── Geometry buffers ─────────────────────────────────────────────────────────
+// Full-screen quad
+const quadBuf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+
+// Stars buffer
+function buildStarBuffers(){
+  const pos=[], sizes=[], colors=[], interactives=[];
+  for(const s of starPositions){
+    pos.push(s.az,s.el);
+    sizes.push(s.size);
+    colors.push(s.r,s.g,s.b);
+    interactives.push(s.interactive?1:0);
+  }
+  const total=starPositions.length;
+  const posBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,posBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(pos),gl.STATIC_DRAW);
+  const sizeBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,sizeBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(sizes),gl.STATIC_DRAW);
+  const colBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,colBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(colors),gl.STATIC_DRAW);
+  const intBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,intBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(interactives),gl.STATIC_DRAW);
+  return {posBuf,sizeBuf,colBuf,intBuf,total};
+}
+let starBufs=buildStarBuffers();
+
+// Milky Way cloud particles
+const MW_COUNT=3200;
+const mwPos=[], mwBright=[];
+for(let i=0;i<MW_COUNT;i++){
+  const az=Math.random()*Math.PI*2;
+  const mwAngle=az;
+  // Milky Way band
+  const bandCenter=0.25+0.18*Math.sin(mwAngle*1.3+0.8)+0.1*Math.cos(mwAngle*0.7);
+  const spread=0.12+0.06*Math.sin(mwAngle*2.1);
+  const el=bandCenter+(Math.random()-0.5)*spread*2;
+  if(el<0.01||el>1.5){i--;continue;}
+  // Brightness varies along band
+  const bright=0.3+0.7*Math.exp(-Math.pow((el-bandCenter)/spread,2))*Math.random();
+  mwPos.push(az,el);
+  mwBright.push(bright);
+}
+const mwPosBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,mwPosBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(mwPos),gl.STATIC_DRAW);
+const mwBrightBuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,mwBrightBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(mwBright),gl.STATIC_DRAW);
+
+// Moon quad (small square, shader clips to circle)
+const moonBuf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,moonBuf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+
+// Terrain silhouette (horizon line)
+function buildTerrain(){
+  const verts=[];
+  const steps=320;
+  for(let i=0;i<=steps;i++){
+    const t=i/steps;
+    const nx=t*2-1;
+    // Slight desert dune silhouette
+    const h=-0.92 + 0.015*Math.sin(t*7.3+1.2)+0.008*Math.sin(t*13.7+0.4)+0.012*Math.sin(t*3.1+2.1)+0.006*Math.sin(t*21.3+0.7);
+    verts.push(nx, h);
+    verts.push(nx,-1.0);
+  }
+  const indices=[];
+  for(let i=0;i<steps;i++){
+    const b=i*4;
+    indices.push(b,b+1,b+2, b+2,b+1,b+3);
+  }
+  const vbuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(verts),gl.STATIC_DRAW);
+  const ibuf=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibuf); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(indices),gl.STATIC_DRAW);
+  return {vbuf,ibuf,count:indices.length};
+}
+const terrain=buildTerrain();
+
+// ── Projection utilities ──────────────────────────────────────────────────────
+function sphereToScreen(az,el,yawV,pitchV){
+  const x0=Math.cos(el)*Math.sin(az);
+  const y0=Math.sin(el);
+  const z0=Math.cos(el)*Math.cos(az);
+  const cy=Math.cos(-yawV),sy=Math.sin(-yawV);
+  const x1=x0*cy+z0*sy, y1=y0, z1=-x0*sy+z0*cy;
+  const cp=Math.cos(pitchV),sp=Math.sin(pitchV);
+  const x2=x1, y2=y1*cp-z1*sp, z2=y1*sp+z1*cp;
+  if(z2<0.05) return null;
+  const aspect=W/H;
+  // Match shader: ndc.x = (x2/z2)/aspect, ndc.y = y2/z2
+  const ndcX = (x2/z2)/aspect;
+  const ndcY = y2/z2;
+  const sx = (ndcX*0.5+0.5)*W;
+  const sy2 = (-ndcY*0.5+0.5)*H;
+  // Cull if outside screen
+  if(sx<-50||sx>W+50||sy2<-50||sy2>H+50) return null;
+  return {x:sx,y:sy2,z:z2};
+}
+
+// ── Mouse / interaction ───────────────────────────────────────────────────────
+const cursor=document.getElementById('custom-cursor');
+let hoverStar=-1, hoverMoon=false;
+
+document.addEventListener('mousemove',e=>{
+  mouseX=e.clientX; mouseY=e.clientY;
+  targetYaw = (mouseX/W-0.5)*Math.PI*1.6;
+  targetPitch = 0.1 + (1-(mouseY/H))*0.8;
+  targetPitch = Math.max(0.0, Math.min(1.3, targetPitch));
+});
+
+document.addEventListener('click',e=>{
+  if(moonPhase>0) return;
+  if(hoverMoon && discoveredCount>=3){
+    triggerMoonSequence();
+    return;
+  }
+  if(hoverStar>=0){
+    const s=starPositions[hoverStar];
+    if(!s.discovered){
+      s.discovered=true;
+      discoveredCount++;
+      showLyric(LYRICS[s.lyricIdx]);
+      pulseWorld();
+    }
+  }
+});
+
+// ── Touch drag-to-look ────────────────────────────────────────────────────────
+let touchStartX=0, touchStartY=0, touchLastX=0, touchLastY=0;
+let touchStartYaw=0, touchStartPitch=0;
+let touchMoved=false;
+
+document.addEventListener('touchstart',e=>{
+  isTouchDevice=true;
+  const t=e.touches[0];
+  touchStartX=touchLastX=t.clientX;
+  touchStartY=touchLastY=t.clientY;
+  touchStartYaw=targetYaw;
+  touchStartPitch=targetPitch;
+  touchMoved=false;
+  mouseX=t.clientX; mouseY=t.clientY;
+},{passive:true});
+
+document.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const t=e.touches[0];
+  const dx=t.clientX-touchLastX;
+  const dy=t.clientY-touchLastY;
+  touchLastX=t.clientX; touchLastY=t.clientY;
+  mouseX=t.clientX; mouseY=t.clientY;
+  // Drag sensitivity
+  targetYaw  += dx * 0.004;
+  targetPitch -= dy * 0.004;
+  targetPitch = Math.max(0.0, Math.min(1.3, targetPitch));
+  if(Math.abs(t.clientX-touchStartX)>8||Math.abs(t.clientY-touchStartY)>8) touchMoved=true;
+},{passive:false});
+
+document.addEventListener('touchend',e=>{
+  const t=e.changedTouches[0];
+  mouseX=t.clientX; mouseY=t.clientY;
+  if(moonPhase>0) return;
+  // Only register tap if barely moved
+  if(touchMoved) return;
+  if(hoverMoon && discoveredCount>=3){ triggerMoonSequence(); return; }
+  if(hoverStar>=0){
+    const s=starPositions[hoverStar];
+    if(!s.discovered){ s.discovered=true; discoveredCount++; showLyric(LYRICS[s.lyricIdx]); pulseWorld(); }
+  }
+},{passive:true});
+
+// ── Lyric display ─────────────────────────────────────────────────────────────
+const lyricEl=document.getElementById('lyric-display');
+let lyricTimeout=null;
+
+function showLyric(text){
+  if(lyricTimeout) clearTimeout(lyricTimeout);
+  lyricEl.innerHTML=text.replace(/\n/g,'<br>');
+  lyricEl.style.opacity='1';
+  lyricEl.style.color='rgba(220,212,190,0.88)';
+  lyricTimeout=setTimeout(()=>{
+    lyricEl.style.color='rgba(220,212,190,0)';
+    lyricEl.style.opacity='0';
+  },5500);
+}
+
+// ── World pulse (subtle brightness on discovery) ──────────────────────────────
+let pulseAmount=0;
+function pulseWorld(){ pulseAmount=1.0; }
+
+// ── Moon sequence ─────────────────────────────────────────────────────────────
+function triggerMoonSequence(){
+  moonPhase=1;
+  const apologyContainer=document.getElementById('apology-container');
+  const apologyText=document.getElementById('apology-text');
+  // Hide hint
+  document.getElementById('hint').style.opacity='0';
+
+  // Fade out lyrics
+  lyricEl.style.opacity='0';
+
+  let elapsed=0;
+  const duration=6000;
+  const startTime=performance.now();
+  function fadeStep(now){
+    elapsed=now-startTime;
+    const t=Math.min(elapsed/duration,1);
+    starFade=1.0-t;
+    globalFade=0.18+0.82*(1-t);
+    if(t<1) requestAnimationFrame(fadeStep);
+    else {
+      moonPhase=2;
+      starFade=0;
+      globalFade=0.18;
+      apologyContainer.style.opacity='1';
+      const lines=APOLOGY.split('\n');
+      let html='';
+      lines.forEach(line=>{
+        html+=`<span style="display:block;min-height:1em">${line||'&nbsp;'}</span>`;
+      });
+      apologyText.innerHTML=html;
+      setTimeout(()=>{ apologyText.style.color='rgba(235,222,195,0.82)'; },400);
+    }
+  }
+  requestAnimationFrame(fadeStep);
+}
+
+// ── Hint fade in ─────────────────────────────────────────────────────────────
+const hint=document.getElementById('hint');
+setTimeout(()=>{
+  hint.style.color='rgba(160,145,120,0.45)';
+  hint.style.opacity='1';
+  setTimeout(()=>{ hint.style.color='rgba(160,145,120,0)'; hint.style.opacity='0'; },4000);
+},3500);
+
+// ── Audio (Web Audio API ambient wind) ───────────────────────────────────────
+let audioCtx=null, gainNode=null, windStarted=false;
+function startAudio(){
+  if(windStarted) return;
+  windStarted=true;
+  try{
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const bufSize=audioCtx.sampleRate*4;
+    const buf=audioCtx.createBuffer(1,bufSize,audioCtx.sampleRate);
+    const data=buf.getChannelData(0);
+    // Pink noise
+    let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0;
+    for(let i=0;i<bufSize;i++){
+      const wn=Math.random()*2-1;
+      b0=0.99886*b0+wn*0.0555179; b1=0.99332*b1+wn*0.0750759;
+      b2=0.96900*b2+wn*0.1538520; b3=0.86650*b3+wn*0.3104856;
+      b4=0.55000*b4+wn*0.5329522; b5=-0.7616*b5-wn*0.0168980;
+      data[i]=(b0+b1+b2+b3+b4+b5+wn*0.5362)*0.11;
+    }
+    const src=audioCtx.createBufferSource();
+    src.buffer=buf; src.loop=true;
+    // Low-pass for wind feel
+    const lpf=audioCtx.createBiquadFilter();
+    lpf.type='lowpass'; lpf.frequency.value=280; lpf.Q.value=0.5;
+    gainNode=audioCtx.createGain(); gainNode.gain.value=0;
+    src.connect(lpf); lpf.connect(gainNode); gainNode.connect(audioCtx.destination);
+    src.start();
+    gainNode.gain.linearRampToValueAtTime(0.32,audioCtx.currentTime+4);
+  }catch(e){}
+}
+document.addEventListener('click',startAudio,{once:true});
+document.addEventListener('touchend',startAudio,{once:true});
+
+// ── Render ───────────────────────────────────────────────────────────────────
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+
+function drawSky(){
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(progSky);
+  gl.bindBuffer(gl.ARRAY_BUFFER,quadBuf);
+  const a=gl.getAttribLocation(progSky,'a_pos');
+  gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+  gl.uniform1f(gl.getUniformLocation(progSky,'u_pitch'),pitch);
+  gl.uniform1f(gl.getUniformLocation(progSky,'u_fade'),globalFade);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+
+function drawTerrain(){
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(progTerrain);
+  gl.bindBuffer(gl.ARRAY_BUFFER,terrain.vbuf);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,terrain.ibuf);
+  const a=gl.getAttribLocation(progTerrain,'a_pos');
+  gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+  gl.uniform1f(gl.getUniformLocation(progTerrain,'u_fade'),globalFade);
+  gl.drawElements(gl.TRIANGLES,terrain.count,gl.UNSIGNED_SHORT,0);
+}
+
+function drawMilkyWay(){
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  gl.useProgram(progMW);
+  const aspect=W/H;
+  gl.bindBuffer(gl.ARRAY_BUFFER,mwPosBuf);
+  const ap=gl.getAttribLocation(progMW,'a_pos');
+  gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap,2,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,mwBrightBuf);
+  const ab=gl.getAttribLocation(progMW,'a_brightness');
+  gl.enableVertexAttribArray(ab); gl.vertexAttribPointer(ab,1,gl.FLOAT,false,0,0);
+  gl.uniform1f(gl.getUniformLocation(progMW,'u_yaw'),yaw);
+  gl.uniform1f(gl.getUniformLocation(progMW,'u_pitch'),pitch);
+  gl.uniform1f(gl.getUniformLocation(progMW,'u_aspect'),aspect);
+  gl.uniform1f(gl.getUniformLocation(progMW,'u_starFade'),starFade);
+  gl.drawArrays(gl.POINTS,0,MW_COUNT);
+}
+
+function drawStars(){
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE);
+  gl.useProgram(progStars);
+  const aspect=W/H;
+  const {posBuf,sizeBuf,colBuf,intBuf}=starBufs;
+  gl.bindBuffer(gl.ARRAY_BUFFER,posBuf);
+  const ap=gl.getAttribLocation(progStars,'a_pos');
+  gl.enableVertexAttribArray(ap); gl.vertexAttribPointer(ap,2,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,sizeBuf);
+  const as=gl.getAttribLocation(progStars,'a_size');
+  gl.enableVertexAttribArray(as); gl.vertexAttribPointer(as,1,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,colBuf);
+  const ac=gl.getAttribLocation(progStars,'a_color');
+  gl.enableVertexAttribArray(ac); gl.vertexAttribPointer(ac,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,intBuf);
+  const ai=gl.getAttribLocation(progStars,'a_interactive');
+  gl.enableVertexAttribArray(ai); gl.vertexAttribPointer(ai,1,gl.FLOAT,false,0,0);
+  gl.uniform1f(gl.getUniformLocation(progStars,'u_yaw'),yaw);
+  gl.uniform1f(gl.getUniformLocation(progStars,'u_pitch'),pitch);
+  gl.uniform1f(gl.getUniformLocation(progStars,'u_aspect'),aspect);
+  gl.uniform1f(gl.getUniformLocation(progStars,'u_starFade'),starFade*(0.85+pulseAmount*0.15));
+  gl.uniform1f(gl.getUniformLocation(progStars,'u_time'),time);
+  gl.drawArrays(gl.POINTS,0,starBufs.total);
+}
+
+function drawMoon(){
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(progMoon);
+  const aspect=W/H;
+  const sc=sphereToScreen(moonData.az,moonData.el,yaw,pitch);
+  if(!sc||sc.z<0.1) return;
+  const ndcX=(sc.x/W)*2-1;
+  const ndcY=-((sc.y/H)*2-1);
+  const moonRadius=0.042*(1/sc.z)*Math.min(1.0,sc.z*1.2);
+  gl.bindBuffer(gl.ARRAY_BUFFER,moonBuf);
+  const a=gl.getAttribLocation(progMoon,'a_pos');
+  gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+  gl.uniform2f(gl.getUniformLocation(progMoon,'u_center'),ndcX,ndcY);
+  gl.uniform1f(gl.getUniformLocation(progMoon,'u_radius'),moonRadius);
+  gl.uniform1f(gl.getUniformLocation(progMoon,'u_aspect'),aspect);
+  gl.uniform1f(gl.getUniformLocation(progMoon,'u_fade'),starFade*globalFade+0.05);
+  gl.uniform1f(gl.getUniformLocation(progMoon,'u_time'),time);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  // Moonlight glow halo (soft, real)
+  moonData._screen={x:sc.x,y:sc.y,r:moonRadius*0.5*W};
+}
+
+// ── Hit testing ─────────────────────────────────────────────────────────────
+function hitTest(){
+  hoverStar=-1; hoverMoon=false;
+  // Moon
+  if(moonData._screen){
+    const dx=mouseX-moonData._screen.x, dy=mouseY-moonData._screen.y;
+    const md=Math.sqrt(dx*dx+dy*dy);
+    if(md<moonData._screen.r*2.5+16){ hoverMoon=true; }
+  }
+  if(!hoverMoon && moonPhase===0){
+    // Stars - use generous hit radius, even more so on touch
+    const hitRadius = isTouchDevice ? 44 : 28;
+    for(let i=0;i<starPositions.length;i++){
+      const s=starPositions[i];
+      if(!s.interactive||s.discovered) continue;
+      const sc=sphereToScreen(s.az,s.el,yaw,pitch);
+      if(!sc) continue;
+      s.screenX=sc.x; s.screenY=sc.y;
+      const dx=mouseX-sc.x, dy=mouseY-sc.y;
+      if(Math.sqrt(dx*dx+dy*dy)<hitRadius){
+        hoverStar=i; break;
+      }
+    }
+  }
+  // Update cursor class
+  cursor.className='';
+  if(hoverStar>=0) cursor.classList.add('hover-star');
+  else if(hoverMoon && discoveredCount>=2) cursor.classList.add('hover-moon');
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+let lastTime=0;
+function frame(now){
+  const dt=Math.min((now-lastTime)/1000,0.05); lastTime=now;
+  time=now/1000;
+
+  // Breathing drift
+  breathPhase+=dt*0.18;
+  const breathX=Math.sin(breathPhase)*0.003;
+  const breathY=Math.sin(breathPhase*0.7+1.0)*0.002;
+
+  // Smooth camera
+  yaw  += (targetYaw  +breathX - yaw)  *0.04;
+  pitch+= (targetPitch+breathY - pitch)*0.04;
+
+  // Pulse decay
+  pulseAmount*=0.97;
+
+  // Audio fade for moon sequence
+  if(moonPhase>=1 && gainNode && audioCtx){
+    const target=moonPhase>=2?0.0:0.15;
+    gainNode.gain.linearRampToValueAtTime(target,audioCtx.currentTime+0.1);
+  }
+
+  hitTest();
+
+  hitTest();
+
+  // Update cursor position
+  cursor.style.left=mouseX+'px'; cursor.style.top=mouseY+'px';
+
+  // Render
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  drawSky();
+  drawMilkyWay();
+  drawStars();
+  drawMoon();
+  drawTerrain();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(t=>{lastTime=t; requestAnimationFrame(frame);});
+</script>
+</body>
+</html>
